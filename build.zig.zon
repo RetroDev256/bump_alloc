@@ -1,0 +1,7 @@
+.{
+    .name = .bump_alloc,
+    .version = "0.0.1",
+    .minimum_zig_version = "0.16.0-dev.368+2a97e0af6",
+    .paths = .{ "build.zig", "build.zig.zon", "root.zig" },
+    .fingerprint = 0x7443864a1c57d4fc,
+}

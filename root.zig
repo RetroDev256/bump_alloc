@@ -2,14 +2,13 @@ const std = @import("std");
 const Alignment = std.mem.Alignment;
 const Allocator = std.mem.Allocator;
 
-memory: [*]u8,
-length: usize,
+base: usize,
+limit: usize,
 
 pub fn init(buffer: []u8) @This() {
-    return .{
-        .memory = buffer.ptr,
-        .length = buffer.len,
-    };
+    const base: usize = @intFromPtr(buffer.ptr);
+    const limit: usize = base + buffer.len;
+    return .{ .base = base, .limit = limit };
 }
 
 pub fn allocator(self: *@This()) Allocator {
@@ -26,16 +25,12 @@ pub fn allocator(self: *@This()) Allocator {
 
 /// Save the current state of the allocator
 pub fn savestate(self: *@This()) usize {
-    return self.length;
+    return self.base;
 }
 
 /// Restore a previously saved allocator state
 pub fn restore(self: *@This(), state: usize) void {
-    const change = self.length -% state;
-    const old_address = @intFromPtr(self.memory);
-    const new_address = old_address +% change;
-    self.memory = @ptrFromInt(new_address);
-    self.length = state;
+    self.base = state;
 }
 
 fn alloc(
@@ -46,16 +41,15 @@ fn alloc(
 ) ?[*]u8 {
     const self: *@This() = @alignCast(@ptrCast(ctx));
 
-    const old_address = @intFromPtr(self.memory);
-    const aligned = alignment.forward(old_address);
-    const required = (aligned - old_address) + length;
+    const aligned = alignment.forward(self.base);
+    const overflow_bits = @bitSizeOf(usize) + 1;
+    const T = std.meta.Int(.unsigned, overflow_bits);
+    const end_addr = @as(T, aligned) + length;
 
     // Only allocate if we have enough space
-    if (required > self.length) return null;
+    if (end_addr > self.limit) return null;
 
-    const new_address = aligned + length;
-    self.memory = @ptrFromInt(new_address);
-    self.length = self.length - required;
+    self.base = @intCast(end_addr);
     return @ptrFromInt(aligned);
 }
 
@@ -68,21 +62,22 @@ fn resize(
 ) bool {
     const self: *@This() = @alignCast(@ptrCast(ctx));
 
-    const next_alloc = memory.ptr + memory.len;
-    const increase = new_length -% memory.len;
-    const shrinking = memory.len >= new_length;
-    const overflow = increase > self.length;
+    const alloc_base = @intFromPtr(memory.ptr);
+    const next_alloc = alloc_base + memory.len;
 
     // Prior allocations can be shrunk, but not grown
-    if (next_alloc != self.memory) return shrinking;
+    const shrinking = memory.len >= new_length;
+    if (next_alloc != self.base) return shrinking;
+
+    const overflow_bits = @bitSizeOf(usize) + 1;
+    const T = std.meta.Int(.unsigned, overflow_bits);
+    const end_addr = @as(T, alloc_base) + new_length;
+
     // Grow allocations only if we have enough space
+    const overflow = end_addr > self.limit;
     if (!shrinking and overflow) return false;
 
-    const old_address = @intFromPtr(self.memory);
-    const new_address = old_address +% increase;
-    self.memory = @ptrFromInt(new_address);
-    self.length = self.length -% increase;
-
+    self.base = @intCast(end_addr);
     return true;
 }
 
@@ -109,11 +104,11 @@ fn free(
     const self: *@This() = @alignCast(@ptrCast(ctx));
 
     // Only free the immediate last allocation
-    const next_alloc = memory.ptr + memory.len;
-    if (next_alloc != self.memory) return;
+    const alloc_base = @intFromPtr(memory.ptr);
+    const next_alloc = alloc_base + memory.len;
+    if (next_alloc != self.base) return;
 
-    self.memory = self.memory - memory.len;
-    self.length = self.length + memory.len;
+    self.base = self.base - memory.len;
 }
 
 test "BumpAllocator General Usage" {
@@ -141,10 +136,7 @@ test "BumpAllocator Savestates" {
         _ = try gpa.create(struct { u8, u17, u33 });
     }
 
-    const correct_length = bump_allocator.length == buffer.len;
-    const correct_memory = bump_allocator.memory == (&buffer).ptr;
-
-    if (!correct_length or !correct_memory) {
+    if (bump_allocator.base != @intFromPtr((&buffer).ptr)) {
         return error.BrokenSaveState;
     }
 }

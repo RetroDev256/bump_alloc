@@ -125,6 +125,7 @@ test "BumpAllocator General Usage" {
 test "BumpAllocator Savestates" {
     var buffer: [256]u8 = undefined;
     var bump_allocator: @This() = .init(&buffer);
+    const original = bump_allocator.savestate();
     const gpa = bump_allocator.allocator();
 
     {
@@ -136,7 +137,7 @@ test "BumpAllocator Savestates" {
         _ = try gpa.create(struct { u8, u17, u33 });
     }
 
-    if (bump_allocator.base != @intFromPtr((&buffer).ptr)) {
+    if (original != bump_allocator.savestate()) {
         return error.BrokenSaveState;
     }
 }

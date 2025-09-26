@@ -41,15 +41,12 @@ fn alloc(
 ) ?[*]u8 {
     const self: *@This() = @alignCast(@ptrCast(ctx));
 
-    const aligned = alignment.forward(self.base);
-    const overflow_bits = @bitSizeOf(usize) + 1;
-    const T = std.meta.Int(.unsigned, overflow_bits);
-    const end_addr = @as(T, aligned) + length;
-
     // Only allocate if we have enough space
-    if (end_addr > self.limit) return null;
+    const aligned = alignment.forward(self.base);
+    const end_addr = @addWithOverflow(aligned, length);
+    if ((end_addr[1] == 1) | (end_addr[0] > self.limit)) return null;
 
-    self.base = @intCast(end_addr);
+    self.base = end_addr[0];
     return @ptrFromInt(aligned);
 }
 
@@ -69,12 +66,9 @@ fn resize(
     const shrinking = memory.len >= new_length;
     if (next_alloc != self.base) return shrinking;
 
-    const overflow_bits = @bitSizeOf(usize) + 1;
-    const T = std.meta.Int(.unsigned, overflow_bits);
-    const end_addr = @as(T, alloc_base) + new_length;
-
     // Grow allocations only if we have enough space
-    const overflow = end_addr > self.limit;
+    const end_addr = @addWithOverflow(alloc_base, new_length);
+    const overflow = (end_addr[1] == 1) | (end_addr[0] > self.limit);
     if (!shrinking and overflow) return false;
 
     self.base = @intCast(end_addr);

@@ -71,7 +71,7 @@ fn resize(
     const overflow = (end_addr[1] == 1) | (end_addr[0] > self.limit);
     if (!shrinking and overflow) return false;
 
-    self.base = @intCast(end_addr);
+    self.base = end_addr[0];
     return true;
 }
 

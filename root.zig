@@ -111,7 +111,7 @@ fn free(
     self.base = self.base - memory.len;
 }
 
-test "BumpAllocator General Usage" {
+test "BumpAllocator" {
     var buffer: [1 << 20]u8 = undefined;
     var bump_allocator: @This() = .init(&buffer);
     const gpa = bump_allocator.allocator();
@@ -122,22 +122,38 @@ test "BumpAllocator General Usage" {
     try std.heap.testAllocatorLargeAlignment(gpa);
 }
 
-test "BumpAllocator Savestates" {
+test "savestate and restore" {
     var buffer: [256]u8 = undefined;
     var bump_allocator: @This() = .init(&buffer);
-    const original = bump_allocator.savestate();
     const gpa = bump_allocator.allocator();
 
-    {
-        const state = bump_allocator.savestate();
-        defer bump_allocator.restore(state);
+    const state_before = bump_allocator.savestate();
+    _ = try gpa.alloc(u8, buffer.len);
 
-        _ = try gpa.create(usize);
-        _ = try gpa.alignedAlloc(u8, .@"32", 13);
-        _ = try gpa.create(struct { u8, u17, u33 });
-    }
+    bump_allocator.restore(state_before);
+    _ = try gpa.alloc(u8, buffer.len);
+}
 
-    if (original != bump_allocator.savestate()) {
-        return error.BrokenSaveState;
-    }
+test "reuse memory on realloc" {
+    var buffer: [10]u8 = undefined;
+    var bump_allocator: @This() = .init(&buffer);
+    const gpa = bump_allocator.allocator();
+
+    const slice_0 = try gpa.alloc(u8, 5);
+    try std.testing.expect(slice_0.len == 5);
+
+    const slice_1 = try gpa.realloc(slice_0, 10);
+    try std.testing.expect(slice_1.ptr == slice_0.ptr);
+    try std.testing.expect(slice_1.len == 10);
+}
+
+test "don't grow one allocation into another" {
+    var buffer: [10]u8 = undefined;
+    var bump_allocator: @This() = .init(&buffer);
+    const gpa = bump_allocator.allocator();
+
+    const slice_0 = try gpa.alloc(u8, 3);
+    const slice_1 = try gpa.alloc(u8, 3);
+    const slice_2 = try gpa.realloc(slice_0, 4);
+    try std.testing.expect(slice_2.ptr == slice_1.ptr + 3);
 }

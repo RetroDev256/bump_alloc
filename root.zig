@@ -33,7 +33,7 @@ pub fn restore(self: *@This(), state: usize) void {
     self.base = state;
 }
 
-fn alloc(
+pub fn alloc(
     ctx: *anyopaque,
     length: usize,
     alignment: Alignment,
@@ -50,7 +50,7 @@ fn alloc(
     return @ptrFromInt(aligned);
 }
 
-fn resize(
+pub fn resize(
     ctx: *anyopaque,
     memory: []u8,
     _: Alignment,
@@ -75,7 +75,7 @@ fn resize(
     return true;
 }
 
-fn remap(
+pub fn remap(
     ctx: *anyopaque,
     memory: []u8,
     _: Alignment,
@@ -89,7 +89,7 @@ fn remap(
     }
 }
 
-fn free(
+pub fn free(
     ctx: *anyopaque,
     memory: []u8,
     _: Alignment,

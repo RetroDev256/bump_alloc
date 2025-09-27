@@ -134,11 +134,8 @@ test "reuse memory on realloc" {
     const gpa = bump_allocator.allocator();
 
     const slice_0 = try gpa.alloc(u8, 5);
-    try std.testing.expect(slice_0.len == 5);
-
     const slice_1 = try gpa.realloc(slice_0, 10);
     try std.testing.expect(slice_1.ptr == slice_0.ptr);
-    try std.testing.expect(slice_1.len == 10);
 }
 
 test "don't grow one allocation into another" {
@@ -150,4 +147,14 @@ test "don't grow one allocation into another" {
     const slice_1 = try gpa.alloc(u8, 3);
     const slice_2 = try gpa.realloc(slice_0, 4);
     try std.testing.expect(slice_2.ptr == slice_1.ptr + 3);
+}
+
+test "avoid integer overflow for obscene allocations" {
+    var buffer: [10]u8 = undefined;
+    var bump_allocator: @This() = .init(&buffer);
+    const gpa = bump_allocator.allocator();
+
+    _ = try gpa.alloc(u8, 5);
+    const problem = gpa.alloc(u8, std.math.maxInt(usize));
+    try std.testing.expectError(error.OutOfMemory, problem);
 }

@@ -2,13 +2,14 @@ const std = @import("std");
 const Alignment = std.mem.Alignment;
 const Allocator = std.mem.Allocator;
 
-base: usize,
-limit: usize,
+start: [*]u8,
+end: [*]u8,
 
 pub fn init(buffer: []u8) @This() {
-    const base: usize = @intFromPtr(buffer.ptr);
-    const limit: usize = base + buffer.len;
-    return .{ .base = base, .limit = limit };
+    return .{
+        .start = buffer.ptr,
+        .end = buffer.ptr + buffer.len,
+    };
 }
 
 pub fn allocator(self: *@This()) Allocator {
@@ -16,8 +17,8 @@ pub fn allocator(self: *@This()) Allocator {
         .ptr = self,
         .vtable = &.{
             .alloc = alloc,
-            .resize = resize,
-            .remap = remap,
+            .resize = Allocator.noResize,
+            .remap = Allocator.noRemap,
             .free = free,
         },
     };
@@ -25,12 +26,12 @@ pub fn allocator(self: *@This()) Allocator {
 
 /// Save the current state of the allocator
 pub fn savestate(self: *@This()) usize {
-    return self.base;
+    return @intFromPtr(self.end);
 }
 
 /// Restore a previously saved allocator state
 pub fn restore(self: *@This(), state: usize) void {
-    self.base = state;
+    self.end = @ptrFromInt(state);
 }
 
 pub fn alloc(
@@ -41,52 +42,14 @@ pub fn alloc(
 ) ?[*]u8 {
     const self: *@This() = @alignCast(@ptrCast(ctx));
 
-    // Only allocate if we have enough space
-    const aligned = alignment.forward(self.base);
-    const end_addr = @addWithOverflow(aligned, length);
-    if ((end_addr[1] == 1) | (end_addr[0] > self.limit)) return null;
+    // Only allocate memory that can fit in the buffer
+    if (@intFromPtr(self.end) < length) return null;
+    const unaligned = @intFromPtr(self.end) - length;
+    const aligned = alignment.backward(unaligned);
+    if (aligned < @intFromPtr(self.start)) return null;
+    self.end = @ptrFromInt(aligned);
 
-    self.base = end_addr[0];
-    return @ptrFromInt(aligned);
-}
-
-pub fn resize(
-    ctx: *anyopaque,
-    memory: []u8,
-    _: Alignment,
-    new_length: usize,
-    _: usize,
-) bool {
-    const self: *@This() = @alignCast(@ptrCast(ctx));
-
-    const alloc_base = @intFromPtr(memory.ptr);
-    const next_alloc = alloc_base + memory.len;
-
-    // Prior allocations can be shrunk, but not grown
-    const shrinking = memory.len >= new_length;
-    if (next_alloc != self.base) return shrinking;
-
-    // Grow allocations only if we have enough space
-    const end_addr = @addWithOverflow(alloc_base, new_length);
-    const overflow = (end_addr[1] == 1) | (end_addr[0] > self.limit);
-    if (!shrinking and overflow) return false;
-
-    self.base = end_addr[0];
-    return true;
-}
-
-pub fn remap(
-    ctx: *anyopaque,
-    memory: []u8,
-    _: Alignment,
-    new_length: usize,
-    _: usize,
-) ?[*]u8 {
-    if (resize(ctx, memory, undefined, new_length, undefined)) {
-        return memory.ptr;
-    } else {
-        return null;
-    }
+    return self.end;
 }
 
 pub fn free(
@@ -95,14 +58,10 @@ pub fn free(
     _: Alignment,
     _: usize,
 ) void {
+    // Only free if this is the immediate last allocation
     const self: *@This() = @alignCast(@ptrCast(ctx));
-
-    // Only free the immediate last allocation
-    const alloc_base = @intFromPtr(memory.ptr);
-    const next_alloc = alloc_base + memory.len;
-    if (next_alloc != self.base) return;
-
-    self.base = self.base - memory.len;
+    if (memory.ptr != self.end) return;
+    self.end += memory.len;
 }
 
 test "BumpAllocator" {
@@ -126,27 +85,6 @@ test "savestate and restore" {
 
     bump_allocator.restore(state_before);
     _ = try gpa.alloc(u8, buffer.len);
-}
-
-test "reuse memory on realloc" {
-    var buffer: [10]u8 = undefined;
-    var bump_allocator: @This() = .init(&buffer);
-    const gpa = bump_allocator.allocator();
-
-    const slice_0 = try gpa.alloc(u8, 5);
-    const slice_1 = try gpa.realloc(slice_0, 10);
-    try std.testing.expect(slice_1.ptr == slice_0.ptr);
-}
-
-test "don't grow one allocation into another" {
-    var buffer: [10]u8 = undefined;
-    var bump_allocator: @This() = .init(&buffer);
-    const gpa = bump_allocator.allocator();
-
-    const slice_0 = try gpa.alloc(u8, 3);
-    const slice_1 = try gpa.alloc(u8, 3);
-    const slice_2 = try gpa.realloc(slice_0, 4);
-    try std.testing.expect(slice_2.ptr == slice_1.ptr + 3);
 }
 
 test "avoid integer overflow for obscene allocations" {

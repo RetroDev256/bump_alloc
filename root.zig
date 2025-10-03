@@ -78,7 +78,7 @@ pub fn resize(
 
     // Allocating memory sets the bump pointer to the next free address.
     // If memory is not the most recent allocation, it cannot be grown.
-    const shrinking = memory.len >= new_length;
+    const shrinking = new_length <= memory.len;
     if (memory.ptr + memory.len != self.bump) return shrinking;
 
     // For the most recent allocation, we can OOM iff we are not shrinking the

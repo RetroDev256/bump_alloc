@@ -77,7 +77,7 @@ pub fn resize(
     assert(alloc_base <= @intFromPtr(self.bump));
 
     // Allocating memory sets the bump pointer to the next free address.
-    // If memory is not the most recent allocation, it can only be shrunk.
+    // If memory is not the most recent allocation, it cannot be grown.
     const shrinking = memory.len >= new_length;
     if (memory.ptr + memory.len != self.bump) return shrinking;
 

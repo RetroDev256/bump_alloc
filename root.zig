@@ -1,13 +1,17 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const Alignment = std.mem.Alignment;
 const Allocator = std.mem.Allocator;
+const safety = std.debug.runtime_safety;
 
-start: [*]u8,
+start: if (safety) [*]u8 else void,
+bump: [*]u8,
 end: [*]u8,
 
 pub fn init(buffer: []u8) @This() {
     return .{
-        .start = buffer.ptr,
+        .start = if (safety) buffer.ptr else {},
+        .bump = buffer.ptr,
         .end = buffer.ptr + buffer.len,
     };
 }
@@ -17,8 +21,8 @@ pub fn allocator(self: *@This()) Allocator {
         .ptr = self,
         .vtable = &.{
             .alloc = alloc,
-            .resize = Allocator.noResize,
-            .remap = Allocator.noRemap,
+            .resize = resize,
+            .remap = remap,
             .free = free,
         },
     };
@@ -26,12 +30,15 @@ pub fn allocator(self: *@This()) Allocator {
 
 /// Save the current state of the allocator
 pub fn savestate(self: *@This()) usize {
-    return @intFromPtr(self.end);
+    return @intFromPtr(self.bump);
 }
 
-/// Restore a previously saved allocator state
+/// Restore a previously saved allocator state (see savestate).
+/// Use @intFromPtr(buffer.ptr) to reset the bump allocator.
 pub fn restore(self: *@This(), state: usize) void {
-    self.end = @ptrFromInt(state);
+    if (safety) assert(state >= @intFromPtr(self.start));
+    assert(state <= @intFromPtr(self.end));
+    self.bump = @ptrFromInt(state);
 }
 
 pub fn alloc(
@@ -42,14 +49,60 @@ pub fn alloc(
 ) ?[*]u8 {
     const self: *@This() = @alignCast(@ptrCast(ctx));
 
-    // Only allocate memory that can fit in the buffer
-    if (@intFromPtr(self.end) < length) return null;
-    const unaligned = @intFromPtr(self.end) - length;
-    const aligned = alignment.backward(unaligned);
-    if (aligned < @intFromPtr(self.start)) return null;
-    self.end = @ptrFromInt(aligned);
+    // Forward alignment is slightly more expensive than backwards alignment,
+    // but in exchange we can grow our last allocation without wasting memory.
+    const aligned = alignment.forward(@intFromPtr(self.bump));
+    const end_addr = @addWithOverflow(aligned, length);
 
-    return self.end;
+    // Guard against overflowing a usize, not just exceeding the end pointer.
+    // Bitwise OR is used here as short-circuiting emits another branch.
+    const exceed = end_addr[0] > @intFromPtr(self.end);
+    if ((end_addr[1] == 1) | exceed) return null;
+
+    self.bump = @ptrFromInt(end_addr[0]);
+    return @ptrFromInt(aligned);
+}
+
+pub fn resize(
+    ctx: *anyopaque,
+    memory: []u8,
+    _: Alignment,
+    new_length: usize,
+    _: usize,
+) bool {
+    const self: *@This() = @alignCast(@ptrCast(ctx));
+
+    const alloc_base = @intFromPtr(memory.ptr);
+    if (safety) assert(alloc_base >= @intFromPtr(self.start));
+    assert(alloc_base <= @intFromPtr(self.bump));
+
+    // Allocating memory sets the bump pointer to the next free address.
+    // If memory is not the most recent allocation, it can only be shrunk.
+    const shrinking = memory.len >= new_length;
+    if (memory.ptr + memory.len != self.bump) return shrinking;
+
+    // For the most recent allocation, we can OOM iff we are not shrinking the
+    // allocation, and new_length + alloc_base exceeds or overflows self.end.
+    const end_addr = @addWithOverflow(alloc_base, new_length);
+    const exceed = end_addr[0] > @intFromPtr(self.end);
+    if (!shrinking and ((end_addr[1] == 1) | exceed)) return false;
+
+    self.bump = @ptrFromInt(end_addr[0]);
+    return true;
+}
+
+pub fn remap(
+    ctx: *anyopaque,
+    memory: []u8,
+    _: Alignment,
+    new_length: usize,
+    _: usize,
+) ?[*]u8 {
+    if (resize(ctx, memory, undefined, new_length, undefined)) {
+        return memory.ptr;
+    } else {
+        return null;
+    }
 }
 
 pub fn free(
@@ -58,10 +111,16 @@ pub fn free(
     _: Alignment,
     _: usize,
 ) void {
-    // Only free if this is the immediate last allocation
     const self: *@This() = @alignCast(@ptrCast(ctx));
-    if (memory.ptr != self.end) return;
-    self.end += memory.len;
+
+    const alloc_base = @intFromPtr(memory.ptr);
+    if (safety) assert(alloc_base >= @intFromPtr(self.start));
+    assert(alloc_base <= @intFromPtr(self.bump));
+
+    // Only the last allocation can be freed, and only fully
+    // if the alignment cost for it's allocation was a noop.
+    if (memory.ptr + memory.len != self.bump) return;
+    self.bump = self.bump - memory.len;
 }
 
 test "BumpAllocator" {
@@ -85,6 +144,27 @@ test "savestate and restore" {
 
     bump_allocator.restore(state_before);
     _ = try gpa.alloc(u8, buffer.len);
+}
+
+test "reuse memory on realloc" {
+    var buffer: [10]u8 = undefined;
+    var bump_allocator: @This() = .init(&buffer);
+    const gpa = bump_allocator.allocator();
+
+    const slice_0 = try gpa.alloc(u8, 5);
+    const slice_1 = try gpa.realloc(slice_0, 10);
+    try std.testing.expect(slice_1.ptr == slice_0.ptr);
+}
+
+test "don't grow one allocation into another" {
+    var buffer: [10]u8 = undefined;
+    var bump_allocator: @This() = .init(&buffer);
+    const gpa = bump_allocator.allocator();
+
+    const slice_0 = try gpa.alloc(u8, 3);
+    const slice_1 = try gpa.alloc(u8, 3);
+    const slice_2 = try gpa.realloc(slice_0, 4);
+    try std.testing.expect(slice_2.ptr == slice_1.ptr + 3);
 }
 
 test "avoid integer overflow for obscene allocations" {

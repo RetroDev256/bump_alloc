@@ -28,7 +28,7 @@ pub fn allocator(self: *@This()) Allocator {
     };
 }
 
-/// Save the current state of the allocator
+/// Save the current state of the bump allocator
 pub fn savestate(self: *@This()) usize {
     return @intFromPtr(self.bump);
 }

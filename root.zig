@@ -49,6 +49,15 @@ pub fn alloc(
 ) ?[*]u8 {
     const self: *@This() = @alignCast(@ptrCast(ctx));
 
+    if (@inComptime()) {
+        // Alignment greater than 1 requires us to know the self.bump
+        // pointer value, which is not currently possible at comptime.
+        assert(alignment == .@"1" or alignment == .@"0");
+        const address = self.bump;
+        self.bump += length;
+        return address;
+    }
+
     // Forward alignment is slightly more expensive than backwards alignment,
     // but in exchange we can grow our last allocation without wasting memory.
     const aligned = alignment.forward(@intFromPtr(self.bump));
@@ -72,14 +81,18 @@ pub fn resize(
 ) bool {
     const self: *@This() = @alignCast(@ptrCast(ctx));
 
-    const alloc_base = @intFromPtr(memory.ptr);
-    if (safety) assert(alloc_base >= @intFromPtr(self.start));
-    assert(alloc_base <= @intFromPtr(self.bump));
+    // We cannot compare pointer values at comptime, which is
+    // required to see if growing an allocation would OOM.
+    const shrinking = new_length <= memory.len;
+    if (@inComptime()) return shrinking;
 
     // Allocating memory sets the bump pointer to the next free address.
     // If memory is not the most recent allocation, it cannot be grown.
-    const shrinking = new_length <= memory.len;
     if (memory.ptr + memory.len != self.bump) return shrinking;
+
+    const alloc_base = @intFromPtr(memory.ptr);
+    if (safety) assert(alloc_base >= @intFromPtr(self.start));
+    assert(alloc_base <= @intFromPtr(self.bump));
 
     // For the most recent allocation, we can OOM iff we are not shrinking the
     // allocation, and alloc_base + new_length exceeds or overflows self.end.
@@ -113,14 +126,18 @@ pub fn free(
 ) void {
     const self: *@This() = @alignCast(@ptrCast(ctx));
 
-    const alloc_base = @intFromPtr(memory.ptr);
-    if (safety) assert(alloc_base >= @intFromPtr(self.start));
-    assert(alloc_base <= @intFromPtr(self.bump));
-
     // Only the last allocation can be freed, and only fully
     // if the alignment cost for it's allocation was a noop.
     if (memory.ptr + memory.len != self.bump) return;
     self.bump = self.bump - memory.len;
+
+    // The safety checks below verify that we own the memory just freed.
+    // We cannot run these safety checks at comptime due to @intFromPtr.
+    if (@inComptime()) return;
+
+    const alloc_base = @intFromPtr(memory.ptr);
+    if (safety) assert(alloc_base >= @intFromPtr(self.start));
+    assert(alloc_base <= @intFromPtr(self.bump));
 }
 
 test "BumpAllocator" {
@@ -175,4 +192,18 @@ test "avoid integer overflow for obscene allocations" {
     _ = try gpa.alloc(u8, 5);
     const problem = gpa.alloc(u8, std.math.maxInt(usize));
     try std.testing.expectError(error.OutOfMemory, problem);
+}
+
+test "works at comptime for alignments <= 1" {
+    comptime {
+        var buffer: [256]u8 = undefined;
+        var bump_allocator: @This() = .init(&buffer);
+        const gpa = bump_allocator.allocator();
+
+        var list: std.ArrayList(u8) = .empty;
+        defer list.deinit(gpa);
+        for ("Hello, World!\n") |byte| {
+            try list.append(gpa, byte);
+        }
+    }
 }

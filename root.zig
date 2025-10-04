@@ -47,7 +47,7 @@ pub fn alloc(
     alignment: Alignment,
     _: usize,
 ) ?[*]u8 {
-    const self: *@This() = @alignCast(@ptrCast(ctx));
+    const self: *@This() = @ptrCast(@alignCast(ctx));
 
     if (@inComptime()) {
         // Alignment greater than 1 requires us to know the self.bump
@@ -79,7 +79,7 @@ pub fn resize(
     new_length: usize,
     _: usize,
 ) bool {
-    const self: *@This() = @alignCast(@ptrCast(ctx));
+    const self: *@This() = @ptrCast(@alignCast(ctx));
 
     // We cannot compare pointer values at comptime, which is
     // required to see if growing an allocation would OOM.
@@ -124,7 +124,7 @@ pub fn free(
     _: Alignment,
     _: usize,
 ) void {
-    const self: *@This() = @alignCast(@ptrCast(ctx));
+    const self: *@This() = @ptrCast(@alignCast(ctx));
 
     // Only the last allocation can be freed, and only fully
     // if the alignment cost for it's allocation was a noop.

@@ -52,14 +52,14 @@ pub fn alloc(
     // Forward alignment is slightly more expensive than backwards alignment,
     // but in exchange we can grow our last allocation without wasting memory.
     const aligned = alignment.forward(@intFromPtr(self.bump));
-    const end_addr = @addWithOverflow(aligned, length);
+    const end_addr, const overflow = @addWithOverflow(aligned, length);
 
     // Guard against overflowing a usize, not just exceeding the end pointer.
     // Bitwise OR is used here as short-circuiting emits another branch.
-    const exceed = end_addr[0] > @intFromPtr(self.end);
-    if ((end_addr[1] == 1) | exceed) return null;
+    const exceed = end_addr > @intFromPtr(self.end);
+    if ((overflow == 1) | exceed) return null;
 
-    self.bump = @ptrFromInt(end_addr[0]);
+    self.bump = @ptrFromInt(end_addr);
     return @ptrFromInt(aligned);
 }
 
@@ -82,12 +82,12 @@ pub fn resize(
     if (memory.ptr + memory.len != self.bump) return shrinking;
 
     // For the most recent allocation, we can OOM iff we are not shrinking the
-    // allocation, and new_length + alloc_base exceeds or overflows self.end.
-    const end_addr = @addWithOverflow(alloc_base, new_length);
-    const exceed = end_addr[0] > @intFromPtr(self.end);
-    if (!shrinking and ((end_addr[1] == 1) | exceed)) return false;
+    // allocation, and alloc_base + new_length exceeds or overflows self.end.
+    const end_addr, const overflow = @addWithOverflow(alloc_base, new_length);
+    const exceed = end_addr > @intFromPtr(self.end);
+    if (!shrinking and ((overflow == 1) | exceed)) return false;
 
-    self.bump = @ptrFromInt(end_addr[0]);
+    self.bump = @ptrFromInt(end_addr);
     return true;
 }
 
